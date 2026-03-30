@@ -1,0 +1,129 @@
+# DESCRIPTION:
+# This pipeline automates the deployment of the portfolio application to Azure VM.
+#
+# 🔹 First Run:
+# - Deploys the complete application after infrastructure setup
+#
+# 🔹 Continuous Deployment:
+# - Automatically updates the website on every push to main
+# - Example: adding blogs, updating UI, fixing bugs
+#
+# PROBLEM:
+# Manual deployment is slow, repetitive, and error-prone.
+#
+# SOLUTION:
+# Fully automated CI/CD pipeline using Azure DevOps + SSH + PM2.
+
+trigger:
+  branches:
+    include:
+      - main
+
+# Use Ubuntu agent for deployment
+pool:
+  vmImage: ubuntu-latest
+
+# Pipeline variables - change VM_IP when deploying to different server
+variables:
+  VM_USER: "azureuser"
+  APP_DIR: "/home/azureuser/portfolio"
+
+steps:
+
+# 1️⃣ Checkout source code from repository
+- checkout: self
+
+# 2️⃣ Download SSH private key
+- task: DownloadSecureFile@1
+  name: sshKey
+  inputs:
+    secureFile: 'portfolio_key.pem'
+
+# 3️⃣ Fetch Azure VM Public IP dynamically
+- script: |
+    set -e
+    
+    # Azure CLI login using service principal
+    az login --service-principal --username $(ARM_CLIENT_ID1) --password $(ARM_CLIENT_SECRET2) --tenant $(ARM_TENANT_ID1)
+    
+    # Get VM public IP
+    VM_NAME="portfolio-vm"
+    RESOURCE_GROUP="RG-Devops"
+    
+    echo "🔍 Fetching public IP for VM: $VM_NAME in RG: $RESOURCE_GROUP"
+    
+    IP=$(az vm show -d \
+      --name "$VM_NAME" \
+      --resource-group "$RESOURCE_GROUP" \
+      --query publicIps \
+      --output tsv)
+    
+    echo "🌐 Retrieved VM IP: $IP"
+    echo "##vso[task.setvariable variable=VM_IP;isOutput=true]$IP"
+  name: getVMIP
+  displayName: "Fetch Azure VM Public IP"
+  env:
+    ARM_CLIENT_ID: $(ARM_CLIENT_ID1)
+    ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET2)
+    ARM_TENANT_ID: $(ARM_TENANT_ID1)
+
+# 4️⃣ Deploy application to Azure VM with zero-downtime
+- script: |
+    set -e
+
+    # Get VM IP from previous step
+    VM_IP=$(getVMIP.VM_IP)
+    echo "🚀 Deploying to VM IP: $VM_IP"
+
+    # Set proper permissions for SSH key
+    chmod 600 $(sshKey.secureFilePath)
+
+    # Test SSH connection
+    echo "🔐 Testing SSH connection to $VM_IP..."
+    ssh -o StrictHostKeyChecking=no -i $(sshKey.secureFilePath) $(VM_USER)@$VM_IP "echo '✅ SSH OK'"
+
+    # Execute deployment on remote VM
+    echo "🔄 Starting zero-downtime deployment..."
+    ssh -i $(sshKey.secureFilePath) -o StrictHostKeyChecking=no $(VM_USER)@$VM_IP "
+      set -e
+
+      echo '📁 Moving to project directory'
+      cd $APP_DIR
+
+      echo '🔧 Fix permissions'
+      sudo chown -R azureuser:azureuser $APP_DIR
+
+      echo '🛑 Fix git safe directory'
+      git config --global --add safe.directory $APP_DIR
+
+      echo '📦 Pull latest code'
+      git pull origin main
+
+      echo '📦 Install dependencies'
+      npm install 
+
+      echo '🏗️ Build app'
+      npm run build
+
+      echo '🚀 Restart app'
+      pm2 restart portfolio
+
+      # Save PM2 configuration to persist across reboots
+      echo '💾 Save PM2'
+      pm2 save
+
+      # Show current PM2 process status
+      echo '📊 PM2 Status'
+      pm2 status
+
+      # Wait for application to start up
+      echo '⏳ Waiting...'
+      sleep 5
+
+      # Health check to ensure application is running correctly
+      echo '🔍 Health check'
+      curl -f http://localhost:3000 && echo '✅ App working' || echo '❌ App failed'
+
+      echo '🎉 Deployment successful'
+    "
+  displayName: "Deploy to Azure VM"

@@ -1,0 +1,8 @@
+location            = "centralindia"
+resource_group_name = "RG-Devops"
+vm_name             = "portfolio-vm"
+vm_size             = "Standard_D2s_v3"
+admin_username      = "azureuser"
+ssh_key_name        = "portfolio_key"
+pat_token           = "zyx"
+admin_email         = "admin@gmail.com"
